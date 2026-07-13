@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring-deployments
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitoring-deployments
+  namespace: monitoring-deployments
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: monitoring-deployments
+  template:
+    metadata:
+      labels:
+        app: monitoring-deployments
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dashboard
+          image: your-registry/monitoring-deployments:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: AZDO_ORGANIZATION
+              value: "your-organization"
+            - name: AZDO_PROJECT
+              value: "your-project"
+            - name: AZDO_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: monitoring-deployments-secret
+                  key: AZDO_PAT
+            - name: POLL_INTERVAL_SECONDS
+              value: "15"
+            - name: COMPLETED_BUILD_LIMIT
+              value: "50"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: monitoring-deployments
+  namespace: monitoring-deployments
+spec:
+  selector:
+    app: monitoring-deployments
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: monitoring-deployments
+  namespace: monitoring-deployments
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: monitoring-deployments.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: monitoring-deployments
+                port:
+                  number: 80
