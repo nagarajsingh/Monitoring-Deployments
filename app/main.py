@@ -23,7 +23,8 @@ class Settings(BaseSettings):
 
 settings = Settings()
 INDEX = Path(__file__).parent / 'index.html'
-GTB_KEYWORDS = ('obdx', 'obtfpm', 'oblm', 'oblmic', 'obvam', 'obvamic', 'plato', 'cmncore', 'moc', 'obp', 'obtf')
+OBMA_APPLICATIONS = ('obtfpm', 'oblm', 'oblmic', 'obvam', 'obvamic', 'plato', 'cmncore', 'moc')
+GTB_ORACLE_APPLICATIONS = ('obdx', 'obp', 'obtf')
 cache: dict[str, Any] = {
     'mode': 'live', 'selectedDate': None, 'updatedAt': None, 'summary': {},
     'runningBuilds': [], 'queuedBuilds': [], 'completedBuilds': [],
@@ -51,22 +52,47 @@ def duration(start: str | None, finish: str | None = None) -> int | None:
     return max(0, int((end_dt - start_dt).total_seconds()))
 
 
-def category_for(name: str | None) -> str:
-    value = (name or '').lower()
-    if 'collection' in value:
+def normalize_path(path: str | None) -> str:
+    return (path or '').replace('\\', '/').strip('/')
+
+
+def application_group(name: str | None, path: str | None = None) -> str:
+    pipeline = (name or '').lower()
+    folder = normalize_path(path).lower()
+
+    if 'gtb-oracle-application' in folder:
+        return 'GTB-Oracle-Application'
+    if folder == 'obma' or folder.startswith('obma/') or '/obma/' in f'/{folder}/':
+        return 'obma'
+    if any(keyword in pipeline for keyword in OBMA_APPLICATIONS):
+        return 'obma'
+    if any(keyword in pipeline for keyword in GTB_ORACLE_APPLICATIONS):
+        return 'GTB-Oracle-Application'
+    if 'collection' in pipeline or 'collection' in folder:
+        return 'Collections'
+    return 'Microservices'
+
+
+def category_for(name: str | None, path: str | None = None) -> str:
+    group = application_group(name, path)
+    if group == 'Collections':
         return 'collections'
-    if any(keyword in value for keyword in GTB_KEYWORDS):
+    if group in ('obma', 'GTB-Oracle-Application'):
         return 'gtb'
     return 'microservices'
 
 
 def build_view(item: dict[str, Any]) -> dict[str, Any]:
-    pipeline = (item.get('definition') or {}).get('name', 'Unknown')
+    definition = item.get('definition') or {}
+    pipeline = definition.get('name', 'Unknown')
+    pipeline_path = normalize_path(definition.get('path'))
     return {
         'id': item.get('id'),
         'number': item.get('buildNumber'),
         'pipeline': pipeline,
-        'category': category_for(pipeline),
+        'pipelinePath': pipeline_path,
+        'applicationGroup': application_group(pipeline, pipeline_path),
+        'category': category_for(pipeline, pipeline_path),
         'branch': (item.get('sourceBranch') or '').removeprefix('refs/heads/'),
         'status': item.get('status'),
         'result': item.get('result'),
@@ -111,10 +137,14 @@ async def load_approvals(client: httpx.AsyncClient) -> tuple[list[dict[str, Any]
         })
         for item in payload.get('value', []):
             resource = item.get('resource') or {}
-            pipeline = (item.get('pipeline') or {}).get('name') or resource.get('name') or 'Pipeline deployment'
+            pipeline_data = item.get('pipeline') or {}
+            pipeline = pipeline_data.get('name') or resource.get('name') or 'Pipeline deployment'
+            pipeline_path = normalize_path(pipeline_data.get('folder') or pipeline_data.get('path'))
             approvals.append({
                 'id': item.get('id'), 'type': 'YAML', 'pipeline': pipeline,
-                'category': category_for(pipeline),
+                'pipelinePath': pipeline_path,
+                'applicationGroup': application_group(pipeline, pipeline_path),
+                'category': category_for(pipeline, pipeline_path),
                 'environment': resource.get('name') or item.get('stageName') or 'Environment',
                 'status': item.get('status') or item.get('state') or 'pending',
                 'createdOn': item.get('createdOn') or item.get('createdDate'),
@@ -133,6 +163,8 @@ async def load_approvals(client: httpx.AsyncClient) -> tuple[list[dict[str, Any]
             pipeline = release.get('name') or 'Classic release'
             approvals.append({
                 'id': item.get('id'), 'type': 'Classic', 'pipeline': pipeline,
+                'pipelinePath': '',
+                'applicationGroup': application_group(pipeline),
                 'category': category_for(pipeline),
                 'environment': environment.get('name') or 'Environment',
                 'status': item.get('status', 'pending'), 'createdOn': item.get('createdOn'),
